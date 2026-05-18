@@ -93,23 +93,27 @@ POLICY_DOC = """\
 
 _SYSTEM_INTAKE = """\
 당신은 한성대학교 강의실 예약 시스템의 신청 어시스턴트입니다.
-사용자가 자연어로 작성한 강의실 예약 요청에서 정해진 필드를 추출하세요.
+사용자가 자연어로 작성한 강의실 예약 요청에서 정해진 필드를 JSON 으로 추출하세요.
 - 명확하지 않은 필드는 null 로 두세요. 추측하지 말 것.
 - 한국어 입력 / 한글 결과.
 
-추출할 필드:
-  applicant_name (str|null), email (str|null), affiliation (str|null),
-  course_name (str|null),
-  course_category ("교양" | "전공-공학" | "전공-무용" | "전공-회화" | "전공-패션+디자인" | null),
-  class_format ("이론" | "이론+실기" | "실기" | null),
-  building (정책의 9개 건물 중 하나 | null),
-  requested_type (예: "일반강의실", "PC실습실" 등 | null),
-  capacity_needed (int|null),
-  days (list[str] — 월/화/수/목/금/토 중 부분집합),
-  time_slot ("N교시 (HH:MM-HH:MM)" 형식 그대로 | null),
-  weeks_range ("전체 학기 (1-15주)" | "전반 (1-7주)" | "후반 (8-15주)" | null),
-  notes (str|null),
-  missing_fields (list[str] — 위 필드 중 null 인 핵심 필드 이름 모음)
+응답 JSON 스키마 (정확한 키 이름과 타입을 지킬 것):
+{
+  "applicant_name": str | null,
+  "email": str | null,
+  "affiliation": str | null,
+  "course_name": str | null,
+  "course_category": "교양" | "전공-공학" | "전공-무용" | "전공-회화" | "전공-패션+디자인" | null,
+  "class_format": "이론" | "이론+실기" | "실기" | null,
+  "building": (정책의 9개 건물 중 하나) | null,
+  "requested_type": str | null,
+  "capacity_needed": int | null,
+  "days": list[str],                   // 월/화/수/목/금/토 의 부분집합
+  "time_slot": str | null,             // "N교시 (HH:MM-HH:MM)" 형식
+  "weeks_range": "전체 학기 (1-15주)" | "전반 (1-7주)" | "후반 (8-15주)" | null,
+  "notes": str | null,
+  "missing_fields": list[str]          // 위 핵심 필드 중 null 인 키 이름
+}
 """
 
 _SYSTEM_CONSISTENCY = """\
@@ -118,8 +122,11 @@ _SYSTEM_CONSISTENCY = """\
 - 하드 규칙 위반(이론 + 실기실/실습실)은 시스템이 별도로 막으므로 굳이 적지 마세요.
 - 다음과 같은 소프트 이상만 보고: 전공-건물 불일치, 인원-강의실종류 부적합 가능성,
   비고와 강의실종류의 모순, 시간/요일의 비현실성 등.
-- 이상 없으면 빈 배열을 반환하세요.
+- 이상 없으면 warnings 를 빈 배열로 반환하세요.
 - 각 경고는 1~2문장, 사실 기반, "~할 가능성이 있습니다." 식 권고 톤.
+
+응답 JSON 스키마:
+{ "warnings": list[str] }
 """
 
 _SYSTEM_DEADLOCK = """\
@@ -127,13 +134,28 @@ _SYSTEM_DEADLOCK = """\
 배정에 실패한(deadlock) 신청에 대해, 주어진 가용 후보와 정책을 바탕으로
 구체적이고 실행 가능한 대안 2~3개를 한국어로 제안하세요.
 
-각 alternative 는 다음 중 하나의 종류여야 합니다:
+각 alternative.kind 는 다음 중 하나:
   - "time_shift" : 같은 강의실종류에서 다른 요일 또는 다른 교시
   - "building_swap" : 같은 시간대에 다른 건물의 같은 종류 강의실
   - "format_relax" : 이론 수업이면 일반강의실 대신 강당식/계단식 시도 등
 
 각 대안은 가능한 한 명시적인 후보(강의실 코드/이름/시간)를 포함하세요.
 끝으로, 신청자에게 보낼 협상 메일 초안(한국어, 정중한 톤, 200~300자) 1개를 작성하세요.
+
+응답 JSON 스키마:
+{
+  "alternatives": [
+    {
+      "kind": "time_shift" | "building_swap" | "format_relax",
+      "description": str,
+      "suggested_classroom_code": str | null,
+      "suggested_classroom_name": str | null,
+      "suggested_days": list[str],
+      "suggested_time_slot": str | null
+    }
+  ],
+  "negotiation_email": str
+}
 """
 
 
@@ -194,19 +216,46 @@ def _cached_system(system_text: str) -> list[dict]:
     ]
 
 
+def _strip_code_fence(text: str) -> str:
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def _call_parse(system_text: str, user_text: str, schema, max_tokens: int = 1024):
+    """JSON 응답 + 클라이언트측 Pydantic 검증.
+
+    Anthropic 의 structured outputs(`messages.parse` / `output_config.format`) 는
+    첫 호출 시 서버에서 스키마를 컴파일하느라 수십~수백 초가 걸릴 수 있다.
+    데모 환경에서는 치명적이라, 프롬프트로 JSON 만 받게 하고 Pydantic 으로
+    클라이언트에서 검증한다. 응답 자체는 일반 Haiku 호출이라 ~1초.
+    """
     client = _client_or_none()
     if client is None:
         return None
+    instr = (
+        "\n\n반드시 **JSON 객체만** 으로 응답하세요. 코드 펜스(```), 설명, 인사말 모두 금지. "
+        "필드명과 타입은 위 시스템 프롬프트의 스키마 정의를 그대로 따릅니다. "
+        "정보가 없으면 해당 필드는 null 또는 빈 배열로 두세요."
+    )
     try:
-        resp = client.messages.parse(
+        resp = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=_cached_system(system_text),
-            messages=[{"role": "user", "content": user_text}],
-            output_format=schema,
+            messages=[{"role": "user", "content": user_text + instr}],
         )
-        return resp.parsed_output
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        text = _strip_code_fence(text)
+        if not text:
+            return _LLMError("empty response")
+        data = json.loads(text)
+        return schema.model_validate(data)
     except Exception as exc:  # noqa: BLE001 — 시연 안정성 우선
         return _LLMError(repr(exc))
 
