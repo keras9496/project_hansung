@@ -226,25 +226,32 @@ _MOCK_EXAMPLES = [
 ]
 
 
-def generate_intake_examples(n: int = 3) -> list[str]:
+def generate_intake_examples(n: int = 1) -> list[str]:
     """챗봇 도입부에 보여줄 자연어 신청 예시 n개. live 면 매번 새로 생성, mock 이면 고정."""
     if not is_live():
-        return list(_MOCK_EXAMPLES[:n])
+        # mock 도 매번 다른 예시가 보이도록 셔플
+        pool = list(_MOCK_EXAMPLES)
+        random.shuffle(pool)
+        return pool[:n]
 
     user_text = (
         f"한성대 강의실 예약을 자연어로 신청하는 짧은 한국어 예시 문장 {n}개를 만들어주세요.\n"
         "- 각 예시는 한 문장(긴 경우 두 문장)으로, 정책 문서의 9개 필드를 가능한 한 자연스럽게 녹여 적습니다.\n"
-        "- 매번 다른 학과/건물/시간을 사용하세요."
+        "- **신청자 한국 이름**(예: 김민수, 박서연)과 **학교 이메일**(예: id@hansung.ac.kr) 을 반드시 포함하세요.\n"
+        "- **소속 학과명** 도 자연스럽게 포함하세요.\n"
+        "- 매번 다른 학과/건물/시간/이름을 사용하세요."
     )
     res = _call_parse(
         "당신은 한성대 강의실 예약 시스템의 데모 도우미입니다. 한국어로 답하세요.",
         user_text,
         IntakeExamples,
-        max_tokens=600,
+        max_tokens=400,
     )
     if isinstance(res, IntakeExamples) and res.examples:
         return res.examples[:n]
-    return list(_MOCK_EXAMPLES[:n])
+    pool = list(_MOCK_EXAMPLES)
+    random.shuffle(pool)
+    return pool[:n]
 
 
 # ─────────────────────── 2) 자연어 → 신청 필드 추출 ───────────────────────

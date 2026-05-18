@@ -137,10 +137,10 @@ git push
 | 항목 | 단위 | 데모용 예상 사용량 | 월 비용 |
 |---|---|---|---|
 | Render Starter | 월 정액 | 1 service | $7 |
-| Anthropic Opus 4.7 | $5 / 1M input, $25 / 1M output | NLU intake 50회 + 데드락 협상 20회 + 일관성 검사 30회 ≈ 200K in / 50K out (prompt caching 적용 후) | ~$2~3 |
-| **합계** | | | **~$10/월** |
+| Anthropic Haiku 4.5 (기본) | $1 / 1M input, $5 / 1M output | NLU intake 50회 + 데드락 협상 20회 + 일관성 검사 30회 ≈ 200K in / 50K out (prompt caching 적용 후) | ~$0.5 |
+| **합계** | | | **~$8/월** |
 
-Haiku 4.5 로 전환 시 LLM 비용은 ~$0.5 수준으로 감소합니다.
+더 높은 품질이 필요하면 `CLAUDE_MODEL=claude-opus-4-7` 로 전환 시 LLM 비용 ~$2-3/월 추가 (총 ~$10).
 
 ---
 

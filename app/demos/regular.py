@@ -285,36 +285,22 @@ def _render_intake_panel(semester: Semester) -> None:
     if st.session_state.reg_step > 0:
         return  # 이미 진행 중이면 노출하지 않음
 
-    with st.expander(f"🤖 AI로 한 번에 입력 ({llm_mode_label()})", expanded=False):
-        st.caption(
-            "이름·이메일·소속·강의명·교과구분·건물·강의실 종류·인원·요일·시간을 한 문장으로 적어주세요. "
+    with st.expander(f"🤖 AI로 한 번에 입력 ({llm_mode_label()})", expanded=True):
+        st.markdown(
+            "**이름·이메일·소속·강의명·교과구분·건물·강의실 종류·인원·요일·시간을 한 문장으로 적어주세요.** "
             "Claude 가 필드를 추출하고, 빠진 부분만 챗봇이 마저 물어봅니다."
         )
 
-        c1, c2 = st.columns([3, 1])
-        with c2:
-            if st.button("💡 예시 새로고침", use_container_width=True, key="reg_intake_refresh"):
-                st.session_state.reg_intake_examples = generate_intake_examples(3)
-                st.rerun()
-
-        if not st.session_state.reg_intake_examples:
-            st.session_state.reg_intake_examples = generate_intake_examples(3)
-
-        st.markdown("**예시 (클릭하면 아래 입력란에 채워집니다)**")
-        for i, ex in enumerate(st.session_state.reg_intake_examples):
-            if st.button(f"예시 {i+1}: {ex[:80]}{'…' if len(ex) > 80 else ''}",
-                         key=f"reg_intake_ex_{i}", use_container_width=True):
-                st.session_state.reg_intake_text = ex
-                st.rerun()
-
+        # 1순위: 텍스트 입력 — 사용자가 곧바로 클릭해 작성 시작
         st.text_area(
-            "자연어 신청 내용",
+            "자연어 신청",
             key="reg_intake_text",
-            height=120,
-            placeholder="예: 다음 학기 월수 2교시 30명 공학 전공 이론 수업, 공학관 일반강의실 희망. 김민수 minsu@hansung.ac.kr 컴퓨터공학부.",
+            height=140,
+            label_visibility="collapsed",
+            placeholder="예: 다음 학기 월수 2교시 30명 공학 전공 이론 수업, 공학관 일반강의실 희망합니다. 김민수 minsu@hansung.ac.kr, 컴퓨터공학부.",
         )
 
-        b1, b2 = st.columns([1, 1])
+        b1, b2 = st.columns([3, 1])
         with b1:
             do_extract = st.button(
                 "🤖 자동 입력",
@@ -326,6 +312,24 @@ def _render_intake_panel(semester: Semester) -> None:
         with b2:
             if st.button("✖ 비우기", use_container_width=True, key="reg_intake_clear"):
                 st.session_state.reg_intake_text = ""
+                st.rerun()
+
+        # 2순위: 예시 1건 (참고용) — 아래에 작게
+        st.markdown("---")
+        head_l, head_r = st.columns([3, 1])
+        with head_l:
+            st.markdown("💡 **예시** — 클릭하면 위 입력란에 채워집니다")
+        with head_r:
+            if st.button("🔄 새 예시", use_container_width=True, key="reg_intake_refresh"):
+                st.session_state.reg_intake_examples = generate_intake_examples(1)
+                st.rerun()
+
+        if not st.session_state.reg_intake_examples:
+            st.session_state.reg_intake_examples = generate_intake_examples(1)
+
+        for i, ex in enumerate(st.session_state.reg_intake_examples[:1]):
+            if st.button(ex, key=f"reg_intake_ex_{i}", use_container_width=True):
+                st.session_state.reg_intake_text = ex
                 st.rerun()
 
         if do_extract:

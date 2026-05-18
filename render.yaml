@@ -25,6 +25,7 @@ services:
       - key: LLM_MODE
         value: live
       - key: CLAUDE_MODEL
-        value: claude-opus-4-7
+        value: claude-haiku-4-5
+        # 더 높은 품질이 필요하면 claude-opus-4-7 로 변경 (속도 ~3배 느림, 비용 ~5배)
       - key: ANTHROPIC_API_KEY
         sync: false        # Render dashboard 에서 입력 (비공개)

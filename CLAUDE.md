@@ -226,8 +226,8 @@ mock 응답은 단순 규칙 기반이지만 핵심 필드는 잡힌다:
 
 ### 8.3 모델 / 비용
 
-- 기본 모델: **`claude-opus-4-7`** (최고 품질) — `CLAUDE_MODEL` 환경변수로 교체
-- 비용이 부담되면 `CLAUDE_MODEL=claude-haiku-4-5` 로 바꾸면 ~5배 저렴
+- 기본 모델: **`claude-haiku-4-5`** (속도/비용 균형) — `CLAUDE_MODEL` 환경변수로 교체
+- 더 높은 추론 품질이 필요하면 `CLAUDE_MODEL=claude-opus-4-7` (속도 ~3배 느림, 비용 ~5배)
 - 정책 문서(`POLICY_DOC`) + 기능별 시스템 프롬프트(`_SYSTEM_*`)는 **prompt caching** 적용 — 두 번째 호출부터 입력 토큰 단가 ~0.1배
 - `_cached_system()` 이 `[{...POLICY_DOC}, {...SYSTEM, cache_control: ephemeral}]` 형태로 시스템 블록 구성. cache_control 위치는 변경 금지(첫 호출 후 5분 TTL 으로 캐시 생성).
 
