@@ -1,10 +1,13 @@
-"""정규 신청 — AI 자연어 입력 전용 데모.
+"""정규 신청 — AI 자연어 입력 + 누락 시 챗봇 보강.
 
-좌측: 🤖 AI 한 번에 입력 → (모든 필수 필드 추출 시) 확인 패널 → 신청 완료.
-우측: 현재 학기에 등록된 신청 테이블(가장 최근이 상단).
+좌측 흐름:
+    1) 🤖 AI 한 번에 입력 (자연어 한 문장 → 필드 추출)
+    2) 누락 필드가 있으면 → 💬 챗봇이 빠진 항목만 차례로 묻는다
+    3) 모든 필수 필드가 모이면 → 📋 확인 패널 (요약 + AI 일관성 검사 + 신청 완료)
+우측: 현재 학기에 등록된 신청 테이블 (가장 최근이 상단).
 
-AI 보조 기능 (Claude API):
-    - 자연어 한 문장 → 필드 추출 (extract_application_fields)
+AI 보조 (Claude API):
+    - 자연어 → 필드 추출 (extract_application_fields)
     - 동적 예시 생성 (generate_intake_examples)
     - 확정 직전 정책 일관성 검사 (check_consistency)
 """
@@ -40,12 +43,35 @@ from app.demos._shared import (
 )
 
 
+# ────────────────────── 필드 정의 (필수 vs 선택) ──────────────────────
+
+# (key, missing_label, chat_prompt)
+_REQUIRED_FIELDS: list[tuple[str, str, str]] = [
+    ("name", "성함", "**신청자 성함**을 알려주세요."),
+    ("email", "이메일", "**이메일**을 알려주세요. (예: id@hansung.ac.kr)"),
+    ("course_name", "강의/행사 명", "**강의 또는 행사 명**을 알려주세요."),
+    ("course_category", "교과구분 1 (교양/전공)", "**교과구분 1**을 선택해주세요. (교양 / 전공-XXX)"),
+    ("class_format", "교과구분 2 (이론/이론+실기/실기)", "**교과구분 2**를 선택해주세요. (이론 / 이론+실기 / 실기)"),
+    ("building", "강의실 구분(건물)", "희망 **강의실 구분(건물)**을 선택해주세요."),
+    ("requested_type", "강의실 종류", "필요한 **강의실 종류**를 선택해주세요."),
+    ("capacity_needed", "필요 인원", "**필요 수용 인원**은 몇 명인가요?"),
+    ("days", "사용 요일", "**사용 요일**을 모두 선택해주세요."),
+    ("time_slot", "사용 시간대", "**사용 시간대**를 선택해주세요."),
+    # weeks / affiliation / notes 는 자동 기본값 처리 (챗봇이 묻지 않음)
+]
+
+_PROMPT_BY_KEY: dict[str, str] = {k: p for k, _l, p in _REQUIRED_FIELDS}
+_LABEL_BY_KEY: dict[str, str] = {k: l for k, l, _p in _REQUIRED_FIELDS}
+
+
 # ────────────────────────── 상태 ──────────────────────────
 
 
 def _init_state() -> None:
     if "reg_draft" not in st.session_state:
         st.session_state.reg_draft = None
+    if "reg_chat" not in st.session_state:
+        st.session_state.reg_chat = []
     if "reg_done" not in st.session_state:
         st.session_state.reg_done = False
     if "reg_last_app_id" not in st.session_state:
@@ -58,22 +84,29 @@ def _init_state() -> None:
 
 def _reset_state() -> None:
     st.session_state.reg_draft = None
+    st.session_state.reg_chat = []
     st.session_state.reg_done = False
     st.session_state.reg_last_app_id = None
     st.session_state["reg_consistency_warnings"] = []
     st.session_state.pop("reg_consistency_for", None)
-    # reg_intake_text 는 위젯 key — instantiate 된 뒤엔 직접 수정 불가. pending 키로 다음 rerun 에 반영.
     st.session_state["_pending_intake_text"] = ""
 
 
-# ────────────────────────── 정규화 헬퍼 ──────────────────────────
+def _append_bot(content: str) -> None:
+    st.session_state.reg_chat.append({"role": "assistant", "content": content})
+
+
+def _append_user(content: str) -> None:
+    st.session_state.reg_chat.append({"role": "user", "content": content})
+
+
+# ────────────────────────── 정규화 / 누락 검사 ──────────────────────────
 
 
 _TIME_NUM_RE = re.compile(r"(\d+)\s*교시")
 
 
 def _normalize_time_slot(value: str | None) -> str | None:
-    """LLM 이 '2교시' 또는 '2교시 (10:30-11:45)' 어느 쪽으로 줘도 정식 라벨로 변환."""
     if not value:
         return None
     if value in TIME_SLOTS:
@@ -89,7 +122,6 @@ def _normalize_time_slot(value: str | None) -> str | None:
 
 
 def _normalize_extracted(ex: ExtractedApplication) -> dict:
-    """LLM 결과를 draft 에 들어갈 수 있는 정식 형태로 정리. 인식 안 된 항목은 빠진다."""
     draft: dict = {}
     if ex.applicant_name:
         draft["name"] = ex.applicant_name.strip()
@@ -130,37 +162,24 @@ def _normalize_extracted(ex: ExtractedApplication) -> dict:
     return draft
 
 
-# ────────────────────────── 필수 필드 검사 ──────────────────────────
-
-# 추출 결과에 반드시 있어야 다음 단계로 넘어가는 필드.
-_REQUIRED_FIELDS: list[tuple[str, str]] = [
-    ("name", "성함"),
-    ("email", "이메일"),
-    ("course_name", "강의/행사 명"),
-    ("course_category", "교과구분 1 (교양/전공)"),
-    ("class_format", "교과구분 2 (이론/이론+실기/실기)"),
-    ("building", "강의실 구분(건물)"),
-    ("requested_type", "강의실 종류"),
-    ("capacity_needed", "필요 인원"),
-    ("days", "사용 요일"),
-    ("time_slot", "사용 시간대"),
-    ("weeks", "사용 주차"),
-]
+def _next_missing_key(draft: dict) -> str | None:
+    """다음에 챗봇이 물어볼 필수 필드 key. 더 없으면 None."""
+    for key, _label, _prompt in _REQUIRED_FIELDS:
+        if key not in draft or draft[key] in (None, "", []):
+            return key
+    return None
 
 
-def _missing_fields(draft: dict) -> list[str]:
-    """누락된 필수 필드의 사람이 읽을 수 있는 라벨 목록."""
+def _missing_labels(draft: dict) -> list[str]:
     return [
-        label for key, label in _REQUIRED_FIELDS
+        label for key, label, _ in _REQUIRED_FIELDS
         if key not in draft or draft[key] in (None, "", [])
     ]
 
 
 def _apply_defaults(draft: dict) -> None:
-    """선택 필드의 기본값 채움 (in-place). 필수 필드는 손대지 않는다."""
     draft.setdefault("affiliation", "미지정")
     draft.setdefault("notes", None)
-    # weeks 가 미입력이면 전체 학기로 기본
     if "weeks" not in draft:
         draft["weeks"] = WEEK_PRESETS["전체 학기 (1-15주)"]
         draft["weeks_display"] = "전체 학기 (1-15주)"
@@ -231,15 +250,13 @@ def _save_application(semester: Semester, draft: dict) -> int:
 
 
 def _render_intake_panel(semester: Semester) -> None:
-    """자연어 한 문장 → 필드 추출. 모든 필수 필드가 채워지면 확인 패널로 진행."""
-    # 위젯 instantiate 전에 pending 값 적용
     if "_pending_intake_text" in st.session_state:
         st.session_state.reg_intake_text = st.session_state.pop("_pending_intake_text")
 
     with st.expander(f"🤖 AI로 한 번에 입력 ({llm_mode_label()})", expanded=True):
         st.markdown(
             "**이름·이메일·소속·강의명·교과구분·건물·강의실 종류·인원·요일·시간을 한 문장으로 적어주세요.** "
-            "Claude 가 필드를 추출합니다. 누락 항목이 있으면 무엇이 빠졌는지 알려드립니다."
+            "Claude 가 필드를 추출합니다. 누락된 항목은 아래 챗봇이 차례로 묻습니다."
         )
 
         st.text_area(
@@ -264,7 +281,7 @@ def _render_intake_panel(semester: Semester) -> None:
                 st.session_state["_pending_intake_text"] = ""
                 st.rerun()
 
-        # 예시 1건 (참고)
+        # 예시 1건
         st.markdown("---")
         head_l, head_r = st.columns([3, 1])
         with head_l:
@@ -287,30 +304,143 @@ def _render_intake_panel(semester: Semester) -> None:
             with st.spinner("Claude 가 신청 내용을 분석 중입니다…"):
                 ex = extract_application_fields(text)
             draft = _normalize_extracted(ex)
-            missing = _missing_fields(draft)
-            if missing:
-                st.error(
-                    "다음 정보가 빠졌습니다. 입력 문장에 추가해서 다시 시도해주세요:\n\n"
-                    + "\n".join(f"  · {m}" for m in missing)
-                )
-                with st.expander("지금까지 추출된 항목 보기", expanded=False):
-                    if draft:
-                        st.markdown(
-                            "\n".join(
-                                f"- **{k}**: {v}" for k, v in draft.items()
-                                if k != "weeks"
-                            )
-                        )
-                    else:
-                        st.caption("추출된 항목이 없습니다.")
-                return
-
-            _apply_defaults(draft)
             st.session_state.reg_draft = draft
+
+            # 챗봇 히스토리 초기화
+            extracted_lines = [
+                f"- **{k}**: {v}" for k, v in draft.items() if k not in ("weeks", "weeks_display")
+            ]
+            preview = "\n".join(extracted_lines) if extracted_lines else "_(추출된 항목 없음)_"
+
+            missing = _missing_labels(draft)
+            if missing:
+                next_key = _next_missing_key(draft)
+                intro = (
+                    "AI가 다음 항목을 자동 추출했습니다:\n\n"
+                    f"{preview}\n\n"
+                    f"빠진 항목 {len(missing)}개를 차례로 여쭤보겠습니다.\n\n"
+                    f"---\n\n{_PROMPT_BY_KEY[next_key]}"
+                )
+            else:
+                intro = (
+                    "AI가 모든 항목을 자동 추출했습니다:\n\n"
+                    f"{preview}\n\n"
+                    "확인 단계로 이동합니다."
+                )
+            st.session_state.reg_chat = [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": intro},
+            ]
             st.rerun()
 
 
-# ────────────────────────── 패널 2: 확인 ──────────────────────────
+# ────────────────────────── 패널 2: 챗봇 (누락 보강) ──────────────────────────
+
+
+def _render_chat_history() -> None:
+    chat_container = st.container(height=400, border=True)
+    with chat_container:
+        for msg in st.session_state.reg_chat:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+
+def _render_field_widget(key: str, draft: dict):
+    """단계별 입력 위젯. 반환값은 폼이 제출됐을 때의 (normalized, display)."""
+    widget_key = f"chat_in_{key}"
+    if key in ("name", "email", "course_name"):
+        return st.text_input(_LABEL_BY_KEY.get(key, key), key=widget_key)
+    if key == "course_category":
+        return st.selectbox("교과구분 1", COURSE_CATEGORIES, key=widget_key)
+    if key == "class_format":
+        return st.selectbox("교과구분 2", CLASS_FORMATS, key=widget_key)
+    if key == "building":
+        pref = preferred_building_for(draft.get("course_category"))
+        default_idx = BUILDING_NAMES.index(pref) if pref in BUILDING_NAMES else 0
+        return st.selectbox(
+            "강의실 구분(건물)",
+            BUILDING_NAMES,
+            index=default_idx,
+            format_func=lambda b: BUILDING_LABELS.get(b, b),
+            key=widget_key,
+            help="전공 수업은 전공 건물이 우선 추천됩니다.",
+        )
+    if key == "requested_type":
+        types = get_classroom_types() or ["(강의실 없음)"]
+        return st.selectbox("강의실 종류", types, key=widget_key)
+    if key == "capacity_needed":
+        return st.number_input("필요 인원", min_value=1, max_value=300, value=30, step=1, key=widget_key)
+    if key == "days":
+        return st.multiselect("요일", DAYS, default=["월"], key=widget_key)
+    if key == "time_slot":
+        return st.selectbox("시간대", TIME_SLOTS, key=widget_key)
+    return None
+
+
+def _validate_and_normalize(key: str, val) -> tuple[bool, str, object, str]:
+    """반환: (ok, error_msg, normalized, display)"""
+    if key in ("name", "course_name"):
+        v = (val or "").strip()
+        if not v:
+            return False, "값을 입력해주세요.", None, ""
+        return True, "", v, v
+    if key == "email":
+        v = (val or "").strip()
+        if "@" not in v or "." not in v:
+            return False, "올바른 이메일을 입력해주세요.", None, ""
+        return True, "", v, v
+    if key in ("course_category", "class_format", "building", "requested_type", "time_slot"):
+        return True, "", val, val
+    if key == "capacity_needed":
+        return True, "", int(val), f"{int(val)}명"
+    if key == "days":
+        if not val:
+            return False, "요일을 한 개 이상 선택해주세요.", None, ""
+        return True, "", list(val), ", ".join(val)
+    return False, "알 수 없는 단계", None, ""
+
+
+def _render_chat_panel(semester: Semester) -> None:
+    draft = st.session_state.reg_draft
+    if draft is None:
+        return
+
+    _render_chat_history()
+
+    next_key = _next_missing_key(draft)
+    if next_key is None:
+        return  # confirm 로 라우팅 (render() 에서 분기)
+
+    with st.form(f"chat_form_{next_key}", clear_on_submit=True):
+        st.markdown(_PROMPT_BY_KEY[next_key])
+        val = _render_field_widget(next_key, draft)
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            submitted = st.form_submit_button("다음 ▶", type="primary", use_container_width=True)
+        with c2:
+            cancel = st.form_submit_button("↺ 처음부터", use_container_width=True)
+
+    if cancel:
+        _reset_state()
+        st.rerun()
+        return
+
+    if submitted:
+        ok, err, normalized, display = _validate_and_normalize(next_key, val)
+        if not ok:
+            st.error(err)
+            return
+        draft[next_key] = normalized
+        _append_user(display)
+        next_after = _next_missing_key(draft)
+        if next_after is None:
+            _append_bot("감사합니다. 모든 정보가 모였습니다. 확인 단계로 이동합니다.")
+        else:
+            _append_bot(_PROMPT_BY_KEY[next_after])
+        st.rerun()
+
+
+# ────────────────────────── 패널 3: 확인 ──────────────────────────
 
 
 def _render_confirm_panel(semester: Semester) -> None:
@@ -318,10 +448,11 @@ def _render_confirm_panel(semester: Semester) -> None:
     if draft is None:
         return
 
+    _apply_defaults(draft)
+
     st.markdown("### 📋 신청 내용 확인")
     st.markdown(_summary_text(draft))
 
-    # 일관성 검사 (draft 변경 시에만 다시 호출)
     if st.session_state.get("reg_consistency_for") != id(draft):
         with st.spinner("Claude 가 신청 내용을 점검 중입니다…"):
             st.session_state["reg_consistency_warnings"] = check_consistency(draft)
@@ -340,6 +471,7 @@ def _render_confirm_panel(semester: Semester) -> None:
             st.session_state.reg_last_app_id = app_id
             st.session_state.reg_done = True
             st.session_state.reg_draft = None
+            st.session_state.reg_chat = []
             st.rerun()
     with c2:
         if st.button("↺ 처음부터 다시", use_container_width=True, key="reg_restart_confirm"):
@@ -347,7 +479,7 @@ def _render_confirm_panel(semester: Semester) -> None:
             st.rerun()
 
 
-# ────────────────────────── 우측 패널 — DB 미러 ──────────────────────────
+# ────────────────────────── 우측 패널 ──────────────────────────
 
 
 def _render_right_pane(semester: Semester) -> None:
@@ -410,7 +542,10 @@ def render(semester: Semester) -> None:
                 _reset_state()
                 st.rerun()
         elif st.session_state.reg_draft is not None:
-            _render_confirm_panel(semester)
+            if _next_missing_key(st.session_state.reg_draft) is None:
+                _render_confirm_panel(semester)
+            else:
+                _render_chat_panel(semester)
         else:
             _render_intake_panel(semester)
 
