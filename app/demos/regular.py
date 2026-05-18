@@ -316,7 +316,7 @@ def _render_intake_panel(semester: Semester) -> None:
         b1, b2 = st.columns([3, 1])
         with b1:
             do_extract = st.button(
-                "🤖 자동 입력",
+                "강의실 예약하기",
                 type="primary",
                 use_container_width=True,
                 key="reg_intake_submit",
