@@ -1,0 +1,47 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# ── 환경 변수 / 시크릿 ──
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── 로컬 DB ──
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite-journal
+
+# ── IDE / 에디터 ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Claude Code / 로컬 작업 메모리 ──
+.claude/
+
+# ── 로그 ──
+*.log
+logs/

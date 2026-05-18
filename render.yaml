@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: hansung-classroom-reservation
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    # 첫 부팅 시 강의실 마스터 자동 시드(idempotent upsert) → Streamlit 실행
+    startCommand: |
+      python scripts/seed_classrooms.py && \
+      streamlit run app/main.py \
+        --server.port $PORT \
+        --server.address 0.0.0.0 \
+        --server.headless true \
+        --server.enableCORS false \
+        --server.enableXsrfProtection true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: ADMIN_TOKEN
+        sync: false        # Render dashboard 에서 입력
+      - key: DB_PATH
+        value: data/reservations.db
+      - key: TIMEZONE
+        value: Asia/Seoul
+      - key: LLM_MODE
+        value: live
+      - key: CLAUDE_MODEL
+        value: claude-opus-4-7
+      - key: ANTHROPIC_API_KEY
+        sync: false        # Render dashboard 에서 입력 (비공개)

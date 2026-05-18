@@ -1,0 +1,9 @@
+# 모든 텍스트 파일을 LF 로 저장 (Render/Linux 호환)
+* text=auto eol=lf
+
+# 명시적으로 바이너리 처리
+*.xlsx binary
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+*.db   binary
