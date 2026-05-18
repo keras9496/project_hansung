@@ -288,6 +288,109 @@ def _render_chat() -> None:
             st.markdown(msg["content"])
 
 
+def _render_form_panel(semester: Semester) -> None:
+    """챗봇 시작 전, 신청서 형식으로 모든 필드를 한 번에 채우는 폼.
+
+    AI 자연어 입력을 쓰지 않는 사용자를 위한 대체 경로. 제출하면 챗봇이 한 단계씩
+    묻지 않고 곧바로 확인(confirm) 단계로 점프한다.
+    """
+    if st.session_state.reg_step > 0:
+        return
+
+    with st.expander("📝 신청서 형식으로 입력하기", expanded=False):
+        st.caption(
+            "한 화면에서 모든 항목을 채우고 **신청서 제출** 을 누르면 확인 단계로 바로 넘어갑니다. "
+            "AI 입력이 익숙하지 않으신 분께 권장합니다."
+        )
+
+        with st.form("reg_manual_form", clear_on_submit=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**신청자 정보**")
+                f_name = st.text_input("성함 *", key="form_name")
+                f_email = st.text_input("이메일 *", key="form_email", placeholder="id@hansung.ac.kr")
+                f_affiliation = st.text_input("소속 (학과·동아리·부서)", key="form_affiliation")
+
+                st.markdown("**강의/행사**")
+                f_course = st.text_input("강의 또는 행사 명 *", key="form_course")
+                f_category = st.selectbox("교과구분 1 *", COURSE_CATEGORIES, key="form_category")
+                f_format = st.selectbox("교과구분 2 *", CLASS_FORMATS, key="form_format")
+
+            with c2:
+                st.markdown("**강의실**")
+                f_building = st.selectbox(
+                    "강의실 구분(건물) *",
+                    BUILDING_NAMES,
+                    format_func=lambda b: BUILDING_LABELS.get(b, b),
+                    key="form_building",
+                    help="전공 수업이면 전공 건물을 직접 선택하시는 게 안전합니다.",
+                )
+                types = get_classroom_types()
+                f_type = st.selectbox("강의실 종류 *", types, key="form_type") if types else None
+                f_capacity = st.number_input(
+                    "필요 수용 인원 *", min_value=1, max_value=300, value=30, step=1, key="form_capacity"
+                )
+
+                st.markdown("**일정**")
+                f_days = st.multiselect("사용 요일 *", DAYS, default=["월"], key="form_days")
+                f_time = st.selectbox("사용 시간대 *", TIME_SLOTS, key="form_time")
+                f_weeks_label = st.selectbox("사용 주차 범위 *", list(WEEK_PRESETS.keys()), key="form_weeks")
+
+            f_notes = st.text_area(
+                "비고 (선택)",
+                placeholder="예: 빔프로젝터 필요 / 외부 강사 마이크 필요 / 조별 토론 책상 배열 …",
+                key="form_notes",
+            )
+
+            submitted = st.form_submit_button(
+                "신청서 제출 ▶", type="primary", use_container_width=True
+            )
+
+        if not submitted:
+            return
+
+        # ── validate ──
+        errors: list[str] = []
+        if not (f_name or "").strip():
+            errors.append("성함")
+        if "@" not in (f_email or "") or "." not in (f_email or ""):
+            errors.append("올바른 이메일")
+        if not (f_course or "").strip():
+            errors.append("강의/행사 명")
+        if not f_days:
+            errors.append("사용 요일 (1개 이상)")
+        if f_type is None:
+            errors.append("강의실 종류 (DB 가 비어 있음 — 강의실 시드 필요)")
+
+        if errors:
+            st.error("다음 항목을 확인해주세요: " + ", ".join(errors))
+            return
+
+        # ── build draft and jump to confirm ──
+        draft = {
+            "name": f_name.strip(),
+            "email": f_email.strip(),
+            "affiliation": (f_affiliation or "").strip() or "미지정",
+            "course_name": f_course.strip(),
+            "course_category": f_category,
+            "class_format": f_format,
+            "building": f_building,
+            "requested_type": f_type,
+            "capacity_needed": int(f_capacity),
+            "days": list(f_days),
+            "time_slot": f_time,
+            "weeks": WEEK_PRESETS[f_weeks_label],
+            "weeks_display": f_weeks_label,
+            "notes": ((f_notes or "").strip() or None),
+        }
+        st.session_state.reg_draft = draft
+        _append_user("(신청서 폼으로 일괄 입력)")
+        _append_bot("신청서 내용을 확인해주세요.")
+        _append_bot(_summary_text(draft))
+        st.session_state.reg_step = STEP_KEYS.index("confirm")
+        st.rerun()
+
+
 def _render_intake_panel(semester: Semester) -> None:
     """챗봇 시작 전, 자연어 한 문장으로 9개 필드를 한 번에 채우는 패널."""
     if st.session_state.reg_step > 0:
@@ -521,6 +624,7 @@ def render(semester: Semester) -> None:
     with left:
         st.subheader("💬 신청자 챗봇")
         _render_intake_panel(semester)
+        _render_form_panel(semester)
         chat_container = st.container(height=520, border=True)
         with chat_container:
             _render_chat()
