@@ -74,7 +74,9 @@ def _reset_state() -> None:
     st.session_state.reg_draft = {}
     st.session_state.reg_chat = [{"role": "assistant", "content": STEPS[0][1]}]
     st.session_state.reg_done = False
-    st.session_state.reg_intake_text = ""
+    # reg_intake_text 는 위젯의 key 이므로 instantiate 된 뒤엔 직접 수정 불가.
+    # pending 키로 두면 다음 rerun 시 intake 패널이 받아 적용한다.
+    st.session_state["_pending_intake_text"] = ""
 
 
 # ─────────────────────────── 정규화 헬퍼 ───────────────────────────
@@ -143,13 +145,19 @@ def _normalize_extracted(ex: ExtractedApplication) -> dict:
 
 
 def _next_missing_step(draft: dict) -> int:
-    """draft 에 비어 있는 첫 STEP 인덱스. 전부 차 있으면 confirm."""
+    """draft 에 비어 있는 첫 STEP 인덱스. 전부 차 있으면 confirm.
+
+    notes 는 한 번 물어본 뒤(키가 draft 에 들어오면 값이 None 이어도) 더 묻지 않는다.
+    이미 채워진 단계는 건너뛴다 (intake 가 미리 채운 필드를 다시 묻지 않게 하기 위함).
+    """
     for i, key in enumerate(STEP_KEYS):
         if key == "confirm":
             return i
         if key == "notes":
-            # notes 는 선택. 비어 있어도 다음으로 진행.
-            continue
+            # 한 번 물어봐서 어떤 값이든(빈 답 포함) 받았으면 skip
+            if "notes" in draft:
+                continue
+            return i
         if key not in draft or draft[key] in (None, "", []):
             return i
     return STEP_KEYS.index("confirm")
@@ -285,6 +293,11 @@ def _render_intake_panel(semester: Semester) -> None:
     if st.session_state.reg_step > 0:
         return  # 이미 진행 중이면 노출하지 않음
 
+    # ⚠ Streamlit 제약: 위젯이 instantiate 된 뒤엔 session_state[key] 를 직접 수정 불가.
+    # 예시/비우기 버튼 핸들러는 _pending_intake_text 에 값을 두고 rerun → 이 위치에서 적용.
+    if "_pending_intake_text" in st.session_state:
+        st.session_state.reg_intake_text = st.session_state.pop("_pending_intake_text")
+
     with st.expander(f"🤖 AI로 한 번에 입력 ({llm_mode_label()})", expanded=True):
         st.markdown(
             "**이름·이메일·소속·강의명·교과구분·건물·강의실 종류·인원·요일·시간을 한 문장으로 적어주세요.** "
@@ -311,7 +324,7 @@ def _render_intake_panel(semester: Semester) -> None:
             )
         with b2:
             if st.button("✖ 비우기", use_container_width=True, key="reg_intake_clear"):
-                st.session_state.reg_intake_text = ""
+                st.session_state["_pending_intake_text"] = ""
                 st.rerun()
 
         # 2순위: 예시 1건 (참고용) — 아래에 작게
@@ -329,7 +342,7 @@ def _render_intake_panel(semester: Semester) -> None:
 
         for i, ex in enumerate(st.session_state.reg_intake_examples[:1]):
             if st.button(ex, key=f"reg_intake_ex_{i}", use_container_width=True):
-                st.session_state.reg_intake_text = ex
+                st.session_state["_pending_intake_text"] = ex
                 st.rerun()
 
         if do_extract:
@@ -450,7 +463,8 @@ def _render_input(semester: Semester) -> None:
             if key == "weeks":
                 draft["weeks_display"] = display
             _append_user(display)
-            st.session_state.reg_step += 1
+            # 다음 빈 단계로 점프 — 이미 채워진 단계(intake 로 채워졌거나 weeks 등)는 건너뛴다.
+            st.session_state.reg_step = _next_missing_step(draft)
             next_key, next_q = STEPS[st.session_state.reg_step]
             if next_key == "confirm":
                 _append_bot(_summary_text(draft))
