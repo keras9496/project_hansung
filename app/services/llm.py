@@ -77,7 +77,10 @@ POLICY_DOC = """\
 
 ## 교과구분 2 (class_format)
 - "이론" / "이론+실기" / "실기"
-- 하드 규칙: 이론 수업은 실기실/실습실(room_type 에 "실기"/"실습" 포함) 배정 불가.
+- 하드 규칙 1: 이론 수업은 실기실/실습실(room_type 에 "실기"/"실습" 포함) 배정 불가.
+- 하드 규칙 2: 전공-XXX + (실기 또는 이론+실기) 신청은 전공 건물에서만 배정 가능
+  (해당 학과 전용 시설 — 실기실/디자인개발실/염색실 등 — 을 전제로 함).
+  전공 건물에 가능 후보가 없으면 다른 건물 fallback 없이 조건매칭 불가로 처리.
 
 ## 강의실 종류 (room_type) 예시
 - "일반강의실", "계단식 강의실", "PC실습실", "실기실", "실습실", "디자인개발실",
@@ -85,7 +88,8 @@ POLICY_DOC = """\
 
 ## 시간 슬롯
 - 요일: 월/화/수/목/금/토 중 1개 이상.
-- 시간대: 1교시(09:00-10:15) … 8교시(19:30-20:45) 중 1개.
+- 시간대: 1교시(09:00-10:15) … 8교시(19:30-20:45) 중 1개, 또는 **연속된 2개 교시** 까지.
+  예: "2교시" 또는 "1-2교시", "1교시 + 2교시" (연속이 아닌 1교시+3교시는 불가).
 
 ## 주차 범위
 - "전체 학기 (1-15주)" | "전반 (1-7주)" | "후반 (8-15주)"
@@ -94,14 +98,27 @@ POLICY_DOC = """\
 _SYSTEM_INTAKE = """\
 당신은 한성대학교 강의실 예약 시스템의 신청 어시스턴트입니다.
 사용자가 자연어로 작성한 강의실 예약 요청에서 정해진 필드를 JSON 으로 추출하세요.
+
+용어 안내(매우 중요):
+- "applicant_name" 은 **강의를 진행하는 강의자(교수) 본인의 이름** 입니다.
+  대리 신청자(조교/사무실 직원 등)의 이름이 아니라 강의자의 이름을 채워주세요.
+  문장에 "OO교수", "OO 강의자", "강의자: OO" 형태가 있으면 그 이름을 우선합니다.
+- "affiliation" 은 강의자가 속한 **학과/부서** 입니다. (예: "컴퓨터공학부", "패션디자인학과")
+  학과 정보가 없으면 null. 추측 금지.
+- "time_slot" 은 단일 교시 또는 **연속된 2개 교시** 까지 허용합니다.
+  - 단일: "2교시 (10:30-11:45)"
+  - 연속 2교시: "1교시 (09:00-10:15) + 2교시 (10:30-11:45)" (구분자 ' + ')
+  - "1-2교시", "1·2교시", "1교시,2교시" 같은 입력은 위 형식으로 정규화하세요.
+  - 연속이 아니면(예: 1교시+3교시) 첫 번째 교시만 채우고 나머지는 notes 에 기록합니다.
+
 - 명확하지 않은 필드는 null 로 두세요. 추측하지 말 것.
 - 한국어 입력 / 한글 결과.
 
 응답 JSON 스키마 (정확한 키 이름과 타입을 지킬 것):
 {
-  "applicant_name": str | null,
+  "applicant_name": str | null,        // 강의자(교수) 본인 이름
   "email": str | null,
-  "affiliation": str | null,
+  "affiliation": str | null,           // 학과/부서
   "course_name": str | null,
   "course_category": "교양" | "전공-공학" | "전공-무용" | "전공-회화" | "전공-패션+디자인" | null,
   "class_format": "이론" | "이론+실기" | "실기" | null,
@@ -109,7 +126,7 @@ _SYSTEM_INTAKE = """\
   "requested_type": str | null,
   "capacity_needed": int | null,
   "days": list[str],                   // 월/화/수/목/금/토 의 부분집합
-  "time_slot": str | null,             // "N교시 (HH:MM-HH:MM)" 형식
+  "time_slot": str | null,             // 단일 또는 ' + ' 로 이은 연속 2교시
   "weeks_range": "전체 학기 (1-15주)" | "전반 (1-7주)" | "후반 (8-15주)" | null,
   "notes": str | null,
   "missing_fields": list[str]          // 위 핵심 필드 중 null 인 키 이름
@@ -131,8 +148,10 @@ _SYSTEM_CONSISTENCY = """\
 
 _SYSTEM_DEADLOCK = """\
 당신은 한성대 강의실 예약 사무실의 협상 보조원입니다.
-배정에 실패한(deadlock) 신청에 대해, 주어진 가용 후보와 정책을 바탕으로
+자동 배정에 실패한(시스템 내부 코드 'deadlock', **사용자 노출 용어는 '조건매칭 불가'**)
+신청에 대해, 주어진 가용 후보와 정책을 바탕으로
 구체적이고 실행 가능한 대안 2~3개를 한국어로 제안하세요.
+협상 메일과 description 본문에는 '데드락' 이 아니라 '조건매칭 불가' 표현을 사용합니다.
 
 각 alternative.kind 는 다음 중 하나:
   - "time_shift" : 같은 강의실종류에서 다른 요일 또는 다른 교시
@@ -269,9 +288,9 @@ class _LLMError:
 
 
 _MOCK_EXAMPLES = [
-    "다음 학기 월수 2교시에 30명 들어가는 공학 전공 이론 수업, 공학관 일반강의실 희망합니다. 신청자: 김민수 (minsu@hansung.ac.kr), 컴퓨터공학부.",
-    "화목 4교시 패션+디자인 전공 실기 수업, 창의관 디자인개발실, 인원 20명. 박서연 / seoyeon@hansung.ac.kr, 패션디자인학과, 전반 7주만 사용합니다.",
-    "월요일 5교시에 교양 글쓰기와 토론 60명, 상상관 계단식 강의실. 이지훈 jihoon@hansung.ac.kr, 교양교육원. 빔프로젝터 필요.",
+    "강의자: 김민수 교수 (minsu@hansung.ac.kr, 컴퓨터공학부). 자료구조 수업, 공학 전공 이론, 월수 1-2교시 연속 30명, 공학관 일반강의실 희망합니다.",
+    "박서연 교수 / seoyeon@hansung.ac.kr / 패션디자인학과. 패션 일러스트(전공-패션+디자인 실기), 화목 4-5교시 20명, 창의관 디자인개발실, 전반 7주만 사용합니다.",
+    "이지훈 교수(jihoon@hansung.ac.kr, 교양교육원). 글쓰기와 토론(교양 이론) 60명, 월요일 5교시, 상상관 계단식 강의실. 빔프로젝터 필요.",
 ]
 
 
@@ -285,9 +304,10 @@ def generate_intake_examples(n: int = 1) -> list[str]:
 
     user_text = (
         f"한성대 강의실 예약을 자연어로 신청하는 짧은 한국어 예시 문장 {n}개를 만들어주세요.\n"
-        "- 각 예시는 한 문장(긴 경우 두 문장)으로, 정책 문서의 9개 필드를 가능한 한 자연스럽게 녹여 적습니다.\n"
-        "- **신청자 한국 이름**(예: 김민수, 박서연)과 **학교 이메일**(예: id@hansung.ac.kr) 을 반드시 포함하세요.\n"
-        "- **소속 학과명** 도 자연스럽게 포함하세요.\n"
+        "- 각 예시는 한 문장(긴 경우 두 문장)으로, 정책 문서의 핵심 필드를 자연스럽게 녹여 적습니다.\n"
+        "- 화자는 강의를 직접 진행하는 **강의자(교수) 본인** 입니다. 'OO교수' 또는 '강의자: OO' 형태로 자기 이름을 적도록 하세요.\n"
+        "- **한국 성명**(예: 김민수 교수)과 **학교 이메일**(예: id@hansung.ac.kr), **소속 학과명** 을 반드시 포함하세요.\n"
+        "- 시간대는 단일 교시(예: 2교시) 또는 **연속된 2교시**(예: 1-2교시) 를 자연스럽게 섞어 사용하세요.\n"
         "- 매번 다른 학과/건물/시간/이름을 사용하세요."
     )
     res = _call_parse(
@@ -310,17 +330,52 @@ _BUILDINGS = ["상상관", "공학관", "탐구관", "낙산관", "미래관", "
 _DAYS = ["월", "화", "수", "목", "금", "토"]
 _CATS = ["교양", "전공-공학", "전공-무용", "전공-회화", "전공-패션+디자인"]
 _FMTS = ["이론", "이론+실기", "실기"]
-_TIME_SLOT_RE = re.compile(r"(\d)\s*교시")
+_TIME_RANGE_RE = re.compile(r"(\d)\s*[-~]\s*(\d)\s*교시")
+_TIME_NUM_RE = re.compile(r"(\d)\s*교시")
+
+
+def _extract_time_slot_string(text: str) -> str | None:
+    """텍스트에서 단일 또는 연속 2교시 표현을 찾아 ' + ' 결합 형태로 반환.
+
+    UI 단의 _normalize_time_slot 이 다시 정식 라벨로 확장하므로
+    여기서는 "1교시" 또는 "1교시 + 2교시" 같은 정규화 직전 형태만 만든다.
+    """
+    m = _TIME_RANGE_RE.search(text)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if 1 <= a <= 8 and 1 <= b <= 8 and abs(a - b) == 1:
+            lo, hi = sorted((a, b))
+            return f"{lo}교시 + {hi}교시"
+    nums = [int(x) for x in _TIME_NUM_RE.findall(text) if 1 <= int(x) <= 8]
+    if not nums:
+        return None
+    if len(nums) >= 2:
+        uniq = sorted(set(nums))
+        if len(uniq) >= 2 and uniq[1] - uniq[0] == 1:
+            return f"{uniq[0]}교시 + {uniq[1]}교시"
+    return f"{nums[0]}교시"
 
 
 def _mock_extract(user_text: str) -> ExtractedApplication:
     text = user_text
     out = ExtractedApplication()
 
+    # 강의자 이름 (mock 은 한글 이름을 안정적으로 못 잡지만, 가능한 패턴만)
+    name_m = re.search(r"강의자\s*[:：]?\s*([가-힣]{2,4})\s*교수?", text)
+    if not name_m:
+        name_m = re.search(r"([가-힣]{2,4})\s*교수", text)
+    if name_m:
+        out.applicant_name = name_m.group(1)
+
     # 이메일
     m = re.search(r"[\w.+-]+@[\w.-]+\.\w+", text)
     if m:
         out.email = m.group(0)
+
+    # 소속(학과) — 흔한 접미사 매칭
+    aff_m = re.search(r"([가-힣A-Za-z0-9+]+(?:학과|학부|교육원|대학원))", text)
+    if aff_m:
+        out.affiliation = aff_m.group(1)
 
     # 인원
     m = re.search(r"(\d{1,3})\s*명", text)
@@ -364,10 +419,8 @@ def _mock_extract(user_text: str) -> ExtractedApplication:
     # 요일
     out.days = [d for d in _DAYS if d in text]
 
-    # 시간대
-    m = _TIME_SLOT_RE.search(text)
-    if m:
-        out.time_slot = f"{m.group(1)}교시"  # 정식 라벨은 UI 단에서 매칭
+    # 시간대 (단일 또는 연속 2교시)
+    out.time_slot = _extract_time_slot_string(text)
 
     # 주차
     if "전반" in text:
@@ -377,8 +430,10 @@ def _mock_extract(user_text: str) -> ExtractedApplication:
     elif "학기" in text or "전체" in text:
         out.weeks_range = "전체 학기 (1-15주)"
 
-    # 누락 항목 계산 (mock 은 핵심 5개만 본다)
+    # 누락 항목 계산
     core = {
+        "applicant_name": out.applicant_name,
+        "affiliation": out.affiliation,
         "course_category": out.course_category,
         "class_format": out.class_format,
         "building": out.building,
@@ -474,8 +529,9 @@ def _mock_deadlock(app: dict, free_pool: list[dict]) -> DeadlockProposal:
                 )
             )
     email = (
-        f"{app.get('applicant_name', '신청자')}님,\n\n"
-        f"신청하신 '{app.get('course_name', '강의')}' 강의실 배정이 요청 시간대에 모두 점유되어 자동 배정에 실패했습니다.\n"
+        f"{app.get('applicant_name', '강의자')} 교수님,\n\n"
+        f"신청하신 '{app.get('course_name', '강의')}' 강의실이 요청 시간대에 모두 점유되거나 "
+        f"조건을 만족하는 후보가 없어 자동 배정이 어려운 상태(조건매칭 불가)입니다.\n"
         "아래 대안 중 가능한 옵션을 회신해주시면 즉시 배정을 진행하겠습니다.\n"
         + ("\n".join(f"- {a.description}" for a in alts) if alts else "- 다른 시간대 또는 다른 건물을 검토 부탁드립니다.\n")
         + "\n\n감사합니다.\n한성대 학사 사무실"
@@ -503,7 +559,8 @@ def suggest_deadlock_alternatives(
         "competing_applications": (occupied_pool or [])[:10],
     }
     user_text = (
-        "데드락 신청 1건과 가용 후보를 제공합니다. 대안 2~3개와 협상 메일 초안 1개를 만들어주세요.\n"
+        "조건매칭 불가(자동 배정 실패) 신청 1건과 가용 후보를 제공합니다. "
+        "대안 2~3개와 협상 메일 초안 1개를 한국어로 만들어주세요.\n"
         f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2, default=str)}\n```"
     )
     res = _call_parse(_SYSTEM_DEADLOCK, user_text, DeadlockProposal, max_tokens=1200)

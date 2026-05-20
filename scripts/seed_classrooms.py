@@ -20,6 +20,12 @@ from app.demos._shared import infer_building_from_code  # noqa: E402
 from app.models import Classroom  # noqa: E402
 
 
+# 원본 xlsx 의 수용인원이 비어 있는 강의실(낙산관 실기실, 진리관 실기실 등)을
+# 0 으로 적재하면 배정 후보 필터(c.capacity >= 필요 인원)에서 무조건 제외되어
+# 전공 건물 우선 규칙이 무력화된다. 보수적 기본값 30 으로 채운다.
+_DEFAULT_CAPACITY_WHEN_MISSING = 30
+
+
 def load_master() -> pd.DataFrame:
     df = pd.read_excel(CLASSROOM_XLSX)
     df = df.rename(columns={
@@ -28,7 +34,8 @@ def load_master() -> pd.DataFrame:
         "강의실 구분": "room_type",
         "수용인원": "capacity",
     })
-    df["capacity"] = df["capacity"].fillna(0).astype(int)
+    df["capacity"] = df["capacity"].fillna(_DEFAULT_CAPACITY_WHEN_MISSING).astype(int)
+    df.loc[df["capacity"] <= 0, "capacity"] = _DEFAULT_CAPACITY_WHEN_MISSING
     return df[["code", "name", "room_type", "capacity"]]
 
 

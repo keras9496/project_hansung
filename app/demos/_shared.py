@@ -1,6 +1,8 @@
 """데모 공용 상수와 헬퍼."""
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -18,6 +20,45 @@ TIME_SLOTS = [
     "7교시 (18:00-19:15)",
     "8교시 (19:30-20:45)",
 ]
+
+# ───── 시간대 헬퍼 (단일 또는 연속 2교시까지 ' + ' 로 이은 라벨) ─────
+
+TIME_SLOT_SEPARATOR = " + "
+_SLOT_NUM_RE = re.compile(r"^(\d+)교시")
+
+
+def slot_number(slot: str | None) -> int | None:
+    if not slot:
+        return None
+    m = _SLOT_NUM_RE.match(slot.strip())
+    return int(m.group(1)) if m else None
+
+
+def split_time_slots(time_slot: str | None) -> list[str]:
+    """단일/다중 time_slot 문자열을 개별 슬롯 라벨 리스트로 분해."""
+    if not time_slot:
+        return []
+    if TIME_SLOT_SEPARATOR in time_slot:
+        return [s.strip() for s in time_slot.split(TIME_SLOT_SEPARATOR) if s.strip()]
+    return [time_slot.strip()]
+
+
+def join_time_slots(slots: list[str]) -> str:
+    """슬롯 라벨들을 교시 번호 오름차순으로 정렬해 ' + ' 로 결합."""
+    keyed = [(slot_number(s) or 99, s) for s in slots]
+    keyed.sort(key=lambda x: x[0])
+    return TIME_SLOT_SEPARATOR.join(s for _, s in keyed)
+
+
+def are_consecutive_slots(slots: list[str]) -> bool:
+    """1개 또는 연속된 2개(이상) 교시인지 검사."""
+    if len(slots) <= 1:
+        return True
+    nums = [slot_number(s) for s in slots]
+    if any(n is None for n in nums):
+        return False
+    nums = sorted(nums)  # type: ignore[arg-type]
+    return all(nums[i + 1] - nums[i] == 1 for i in range(len(nums) - 1))
 
 WEEK_PRESETS = {
     "전체 학기 (1-15주)": list(range(1, 16)),

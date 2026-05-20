@@ -1,7 +1,10 @@
 """배정 실행 데모.
 
 좌측: 학기 신청 현황 + '지금 배정 실행' 버튼 + 직전 실행 로그.
-우측: 배정 결과 테이블 + 데드락 목록 (AI 협상안 생성 포함).
+우측: 배정 결과 테이블 + 조건매칭 불가 목록 (AI 협상안 생성 포함).
+
+내부 상태값(Application.status, MailLog.event_kind 등)은 'deadlock' 으로
+유지하지만, 사용자 노출 문구는 모두 '조건매칭 불가' 로 통일한다.
 """
 from __future__ import annotations
 
@@ -9,7 +12,7 @@ import streamlit as st
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.demos._shared import is_practice_room
+from app.demos._shared import is_practice_room, split_time_slots
 from app.models import Application, Assignment, Classroom, Semester
 from app.services.assignment_engine import run_assignment
 from app.services.llm import (
@@ -36,14 +39,17 @@ def _left_pane(semester: Semester) -> None:
     c1.metric("총 신청", total)
     c2.metric("대기", pending)
     c3.metric("배정", assigned)
-    c4.metric("데드락", deadlock)
+    c4.metric("조건매칭 불가", deadlock)
 
     st.markdown(
         "**배정 정책**  \n"
         "- 우선순위: 도착순(FCFS)  \n"
-        "- 하드 규칙: 이론 수업은 실기/실습실 배정 불가  \n"
-        "- 소프트 규칙: 전공 수업은 전공 건물(공학→공학관 / 무용→낙산관 / "
-        "회화→지선관 / 패션+디자인→창의관) 우선 → 신청자 희망 건물 우선 → 그 외  \n"
+        "- 하드 규칙 1: 이론 수업은 실기/실습실 배정 불가  \n"
+        "- 하드 규칙 2: **전공 + (실기 / 이론+실기)** 수업은 반드시 전공 건물에서만 배정 "
+        "(공학→공학관 / 무용→낙산관 / 회화→지선관 / 패션+디자인→창의관). "
+        "전공 건물에 가능 후보가 없으면 다른 건물 fallback 없이 **조건매칭 불가**  \n"
+        "- 소프트 규칙(이론·교양): 전공 수업은 전공 건물 우선 → 강의자 희망 건물 → 그 외  \n"
+        "- 시간대: 단일 교시 또는 **연속된 2교시** 까지 점유 가능  \n"
         "- best-fit: 적합 강의실 중 수용인원이 가장 작은 강의실 우선"
     )
 
@@ -66,9 +72,16 @@ def _left_pane(semester: Semester) -> None:
 
     last = st.session_state.get("assign_last_result")
     if last:
+        major_total = last.get("major_total", 0)
+        major_match = last.get("major_match", 0)
+        match_pct = (major_match / major_total * 100) if major_total else None
+        match_line = (
+            f" · 전공 매칭률 **{match_pct:.0f}%** ({major_match}/{major_total})"
+            if match_pct is not None else ""
+        )
         st.success(
             f"직전 실행: 총 {last['total']}건 중 **{last['assigned']}건 배정**, "
-            f"**{last['deadlock']}건 데드락**"
+            f"**{last['deadlock']}건 조건매칭 불가**{match_line}"
         )
         tier_label = {"major": "전공건물", "user": "희망건물", "rest": "그 외"}
         with st.expander("실행 상세 로그", expanded=False):
@@ -76,20 +89,29 @@ def _left_pane(semester: Semester) -> None:
                 if d["result"] == "assigned":
                     tier = tier_label.get(d.get("tier", ""), d.get("tier", ""))
                     bld = d.get("classroom_building") or "-"
+                    cat = d.get("course_category") or ""
+                    badge = ""
+                    if cat.startswith("전공-"):
+                        if d.get("tier") == "major":
+                            badge = " ✅ 전공건물 매칭"
+                        elif d.get("tier") == "user":
+                            badge = " ⚠️ 전공건물 외 (희망건물로 배정)"
+                        else:
+                            badge = " ❌ 전공/희망 건물 모두 외"
                     st.write(
                         f"- #{d['application_id']} {d['applicant']} → "
-                        f"{d['classroom_code']} {d['classroom_name']} ({bld}, {tier})"
+                        f"{d['classroom_code']} {d['classroom_name']} ({bld}, {tier}){badge}"
                     )
                 else:
                     reason = d.get("reason") or ""
                     st.write(
-                        f"- #{d['application_id']} {d['applicant']} → **DEADLOCK**"
+                        f"- #{d['application_id']} {d['applicant']} → **조건매칭 불가**"
                         + (f" — {reason}" if reason else "")
                     )
 
 
 def _right_pane(semester: Semester) -> None:
-    st.subheader("📋 배정 결과 / 데드락")
+    st.subheader("📋 배정 결과 / 조건매칭 불가")
 
     with SessionLocal() as s:
         rows = s.execute(
@@ -138,16 +160,31 @@ def _right_pane(semester: Semester) -> None:
             hint = ""
             if app_building and room_building and app_building != room_building:
                 hint = f" (희망:{app_building})"
+
+            # 전공 매칭 뱃지: 전공 수업인 경우에만 의미가 있다.
+            major_match_badge = "-"
+            cc = course_category or ""
+            if cc.startswith("전공-"):
+                from app.demos._shared import preferred_building_for
+                expected = preferred_building_for(cc)
+                if expected and room_building == expected:
+                    major_match_badge = "✅ 전공건물"
+                elif app_building and room_building == app_building:
+                    major_match_badge = "⚠️ 희망건물 (전공건물 외)"
+                else:
+                    major_match_badge = "❌ 전공/희망 모두 외"
+
             df.append({
                 "배정ID": assign_id,
                 "신청ID": app_id,
-                "신청자": applicant,
+                "강의자": applicant,
                 "강의/행사": course_name,
                 "교과1": course_category or "-",
                 "교과2": class_format or "-",
                 "종류": requested_type,
                 "필요인원": capacity_needed,
                 "배정 건물": f"{room_building or '-'}{hint}",
+                "전공 매칭": major_match_badge,
                 "배정 강의실": f"{room_code} {room_name} (수용{room_capacity})",
                 "요일": ", ".join(days),
                 "시간대": time_slot,
@@ -160,11 +197,15 @@ def _right_pane(semester: Semester) -> None:
 
     if deadlocks:
         st.markdown("---")
-        st.error(f"⚠️ 데드락 {len(deadlocks)}건 — 어드민 메일 발송함에서 조율 메일을 시뮬레이션 전송할 수 있습니다.")
+        st.error(
+            f"⚠️ 조건매칭 불가 {len(deadlocks)}건 — 신청 조건(요일/시간/종류/수용인원)을 "
+            "동시에 만족하는 강의실을 찾지 못한 신청입니다. 어드민 메일 발송함에서 조율 메일을 시뮬레이션 전송할 수 있습니다."
+        )
         d_rows = [
             {
                 "신청ID": d.id,
-                "신청자": d.applicant_name,
+                "강의자": d.applicant_name,
+                "소속(학과)": d.affiliation or "-",
                 "이메일": d.email,
                 "교과1": d.course_category or "-",
                 "교과2": d.class_format or "-",
@@ -180,7 +221,7 @@ def _right_pane(semester: Semester) -> None:
 
         st.markdown(f"#### 🤖 AI 협상안 ({llm_mode_label()})")
         st.caption(
-            "각 데드락 건을 펼쳐 'AI 협상안 생성' 을 누르면 Claude 가 가용 슬롯을 분석해 "
+            "각 조건매칭 불가 건을 펼쳐 'AI 협상안 생성' 을 누르면 Claude 가 가용 슬롯을 분석해 "
             "구체적인 대안 2~3개와 협상 메일 초안을 만들어 줍니다."
         )
         for d in deadlocks:
@@ -287,12 +328,16 @@ def _build_pools_for(semester_id: int, app: Application) -> tuple[list[dict], li
         )
 
     # (classroom_id, day, time_slot) → 누가 점유 중인가
+    # 다중 교시(' + ' 결합)인 경우 개별 슬롯으로 분해해 모두 점유 표시.
     occupied: dict[tuple[int, str, str], int] = {}
     for asg in assignments:
         for d in asg.days:
-            occupied[(asg.classroom_id, d, asg.time_slot)] = asg.application_id
+            for ts in split_time_slots(asg.time_slot):
+                occupied[(asg.classroom_id, d, ts)] = asg.application_id
 
     theory_only = app.class_format == "이론"
+    app_slots = split_time_slots(app.time_slot)
+    app_slot_set = set(app_slots)
 
     # 적합 강의실 = 종류 일치 + 수용 충분 + (이론이면 실기/실습 제외)
     suitable = [
@@ -306,7 +351,7 @@ def _build_pools_for(semester_id: int, app: Application) -> tuple[list[dict], li
 
     # building_swap: 같은 요일/시간대, 다른 강의실(다른 건물 가능)
     for c in suitable:
-        if any((c.id, d, app.time_slot) in occupied for d in app.days):
+        if any((c.id, d, ts) in occupied for d in app.days for ts in app_slots):
             continue
         free_pool.append({
             "classroom_code": c.code,
@@ -319,9 +364,9 @@ def _build_pools_for(semester_id: int, app: Application) -> tuple[list[dict], li
             "kind_hint": "building_swap" if c.building != app.building else "same_building_swap",
         })
 
-    # time_shift: 같은 강의실 대안 시간대 (인기 슬롯 외 일부)
+    # time_shift: 같은 강의실 대안 시간대 (단일 교시 단위로 비교)
     from app.demos._shared import TIME_SLOTS
-    alt_slots = [t for t in TIME_SLOTS if t != app.time_slot]
+    alt_slots = [t for t in TIME_SLOTS if t not in app_slot_set]
     for c in suitable[:20]:  # 너무 커지지 않도록 상위 20개만
         for t in alt_slots[:4]:
             if all((c.id, d, t) not in occupied for d in app.days):
@@ -337,10 +382,10 @@ def _build_pools_for(semester_id: int, app: Application) -> tuple[list[dict], li
                 })
                 break
 
-    # 같은 시간대 점유 신청 (협상 대상 후보)
+    # 같은 시간대 점유 신청 (협상 대상 후보) — app 의 어느 슬롯이든 겹치면 포함
     occupied_apps_ids = {
         aid for (cid, d, t), aid in occupied.items()
-        if t == app.time_slot and d in app.days
+        if t in app_slot_set and d in app.days
     }
     by_id = {a.id: a for a in all_apps}
     occupied_pool: list[dict] = []

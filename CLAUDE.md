@@ -152,13 +152,19 @@ _PENDING_COLUMNS: list[tuple[str, str, str]] = [
 ### 정책
 
 1. **우선순위**: 도착순 FCFS (created_at 오름차순, 동률은 id 오름차순)
-2. **하드 규칙**: `class_format == "이론"` 이면 `is_practice_room()` 인 강의실 제외
-3. **소프트 규칙** (3-tier — 위에서 아래로 시도, 비면 다음 tier)
+2. **하드 규칙 1**: `class_format == "이론"` 이면 `is_practice_room()` 인 강의실 제외
+3. **하드 규칙 2 (전공-실기 잠금)**: `course_category` 가 `전공-XXX` 이고
+   `class_format` 이 `실기` 또는 `이론+실기` 이면 base 후보를 전공 건물로만 제한.
+   전공 건물에 가능 후보가 없으면 fallback 없이 즉시 `deadlock`.
+   이유: 학과 전용 시설(낙산관 무용실기실, 창의관 디자인개발실/염색실, 지선관 회화실기실,
+   공학관 실험실) 을 전제로 한 수업이므로 다른 건물로 떨어지면 의미가 없음.
+4. **소프트 규칙** (3-tier — 위에서 아래로 시도, 비면 다음 tier) — 하드 규칙 2 에
+   걸리지 않는 신청에만 적용
    - **tier_major**: 전공 수업이면 매칭 전공 건물 후보만
    - **tier_user**: 신청자가 고른 희망 건물 후보 (major 와 중복 제거)
    - **tier_rest**: 그 외 모든 후보
-4. 각 tier 안에서 무작위 셔플 + 최소 capacity best-fit 선택
-5. 모든 tier 가 비면 `deadlock` 으로 마킹 + 메일 큐 적재
+5. 각 tier 안에서 무작위 셔플 + 최소 capacity best-fit 선택
+6. 모든 tier 가 비면 `deadlock` 으로 마킹 + 메일 큐 적재 (사용자 노출 용어: **조건매칭 불가**)
 
 ### 호출 인터페이스
 

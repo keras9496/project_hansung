@@ -38,17 +38,24 @@ from app.demos._shared import (
     DAYS,
     TIME_SLOTS,
     WEEK_PRESETS,
+    are_consecutive_slots,
     get_classroom_types,
+    join_time_slots,
     preferred_building_for,
+    slot_number,
+    split_time_slots,
 )
 
 
 # ────────────────────── 필드 정의 (필수 vs 선택) ──────────────────────
 
 # (key, missing_label, chat_prompt)
+# 신청서는 교과목 1건 = 강의자(교수) 1명이 작성한다는 가정.
+# 조교/대리 신청 시에도 이름은 강의자 본인을 입력한다.
 _REQUIRED_FIELDS: list[tuple[str, str, str]] = [
-    ("name", "성함", "**신청자 성함**을 알려주세요."),
+    ("name", "강의자 성함", "**강의자(교수) 본인의 성함**을 알려주세요. (대리 신청이어도 강의자 본인 이름)"),
     ("email", "이메일", "**이메일**을 알려주세요. (예: id@hansung.ac.kr)"),
+    ("affiliation", "강의자 소속(학과)", "강의자의 **소속 학과**를 알려주세요. (예: 컴퓨터공학부 / 패션디자인학과)"),
     ("course_name", "강의/행사 명", "**강의 또는 행사 명**을 알려주세요."),
     ("course_category", "교과구분 1 (교양/전공)", "**교과구분 1**을 선택해주세요. (교양 / 전공-XXX)"),
     ("class_format", "교과구분 2 (이론/이론+실기/실기)", "**교과구분 2**를 선택해주세요. (이론 / 이론+실기 / 실기)"),
@@ -56,8 +63,8 @@ _REQUIRED_FIELDS: list[tuple[str, str, str]] = [
     ("requested_type", "강의실 종류", "필요한 **강의실 종류**를 선택해주세요."),
     ("capacity_needed", "필요 인원", "**필요 수용 인원**은 몇 명인가요?"),
     ("days", "사용 요일", "**사용 요일**을 모두 선택해주세요."),
-    ("time_slot", "사용 시간대", "**사용 시간대**를 선택해주세요."),
-    # weeks / affiliation / notes 는 자동 기본값 처리 (챗봇이 묻지 않음)
+    ("time_slot", "사용 시간대", "**사용 시간대**를 선택해주세요. (1교시 또는 연속된 2교시까지 선택 가능)"),
+    # weeks / notes 는 자동 기본값 처리 (챗봇이 묻지 않음)
 ]
 
 _PROMPT_BY_KEY: dict[str, str] = {k: p for k, _l, p in _REQUIRED_FIELDS}
@@ -104,21 +111,62 @@ def _append_user(content: str) -> None:
 
 
 _TIME_NUM_RE = re.compile(r"(\d+)\s*교시")
+_TIME_RANGE_RE = re.compile(r"(\d+)\s*[-~]\s*(\d+)\s*교시")
 
 
-def _normalize_time_slot(value: str | None) -> str | None:
-    if not value:
-        return None
-    if value in TIME_SLOTS:
-        return value
-    m = _TIME_NUM_RE.search(value)
-    if not m:
-        return None
-    n = m.group(1)
+def _slot_label_for(n: int) -> str | None:
     for slot in TIME_SLOTS:
         if slot.startswith(f"{n}교시"):
             return slot
     return None
+
+
+def _normalize_time_slot(value: str | None) -> str | None:
+    """단일/다중 교시 표현을 정식 라벨로 정규화.
+
+    반환은 단일 라벨 또는 ' + ' 로 이은 연속 2교시 라벨.
+    """
+    if not value:
+        return None
+    # 이미 정식 라벨 또는 ' + ' 결합된 정식 라벨이면 그대로
+    if value in TIME_SLOTS:
+        return value
+    if " + " in value:
+        parts = [p.strip() for p in value.split(" + ")]
+        normalized_parts: list[str] = []
+        for p in parts:
+            sub = _normalize_time_slot(p)
+            if sub:
+                normalized_parts.extend(split_time_slots(sub))
+        unique_sorted = sorted(set(normalized_parts), key=lambda s: slot_number(s) or 99)
+        if not unique_sorted:
+            return None
+        if len(unique_sorted) >= 2 and are_consecutive_slots(unique_sorted[:2]):
+            return join_time_slots(unique_sorted[:2])
+        return unique_sorted[0]
+
+    # 범위 표기: "1-2교시", "1~2교시"
+    rm = _TIME_RANGE_RE.search(value)
+    if rm:
+        a, b = int(rm.group(1)), int(rm.group(2))
+        if a > b:
+            a, b = b, a
+        if 1 <= a <= 8 and 1 <= b <= 8 and (b - a) == 1:
+            sa, sb = _slot_label_for(a), _slot_label_for(b)
+            if sa and sb:
+                return join_time_slots([sa, sb])
+            return sa or sb
+
+    # 다중 "N교시" 패턴
+    all_nums = [int(x) for x in _TIME_NUM_RE.findall(value) if 1 <= int(x) <= 8]
+    if not all_nums:
+        return None
+    uniq = sorted(set(all_nums))
+    if len(uniq) >= 2 and uniq[1] - uniq[0] == 1:
+        sa, sb = _slot_label_for(uniq[0]), _slot_label_for(uniq[1])
+        if sa and sb:
+            return join_time_slots([sa, sb])
+    return _slot_label_for(uniq[0])
 
 
 def _normalize_extracted(ex: ExtractedApplication) -> dict:
@@ -178,7 +226,7 @@ def _missing_labels(draft: dict) -> list[str]:
 
 
 def _apply_defaults(draft: dict) -> None:
-    draft.setdefault("affiliation", "미지정")
+    # affiliation 은 필수 필드로 승격됐으므로 자동 기본값 미적용.
     draft.setdefault("notes", None)
     if "weeks" not in draft:
         draft["weeks"] = WEEK_PRESETS["전체 학기 (1-15주)"]
@@ -190,8 +238,8 @@ def _apply_defaults(draft: dict) -> None:
 
 def _summary_text(d: dict) -> str:
     return (
-        f"- **신청자**: {d.get('name')} ({d.get('email')})\n"
-        f"- **소속**: {d.get('affiliation')}\n"
+        f"- **강의자(교수)**: {d.get('name')} ({d.get('email')})\n"
+        f"- **소속(학과)**: {d.get('affiliation')}\n"
         f"- **강의/행사**: {d.get('course_name')}\n"
         f"- **교과구분 1**: {d.get('course_category')}\n"
         f"- **교과구분 2**: {d.get('class_format')}\n"
@@ -255,8 +303,9 @@ def _render_intake_panel(semester: Semester) -> None:
 
     with st.expander(f"🤖 AI로 한 번에 입력 ({llm_mode_label()})", expanded=True):
         st.markdown(
-            "**이름·이메일·소속·강의명·교과구분·건물·강의실 종류·인원·요일·시간을 한 문장으로 적어주세요.** "
-            "Claude 가 필드를 추출합니다. 누락된 항목은 아래 챗봇이 차례로 묻습니다."
+            "**강의자(교수) 본인 이름·이메일·소속 학과·강의명·교과구분·건물·강의실 종류·인원·요일·시간을 한 문장으로 적어주세요.** "
+            "Claude 가 필드를 추출합니다. 누락된 항목은 아래 챗봇이 차례로 묻습니다. "
+            "시간대는 단일 교시 또는 **연속된 2교시**(예: 1-2교시) 까지 가능합니다."
         )
 
         st.text_area(
@@ -264,7 +313,7 @@ def _render_intake_panel(semester: Semester) -> None:
             key="reg_intake_text",
             height=140,
             label_visibility="collapsed",
-            placeholder="예: 다음 학기 월수 2교시 30명 공학 전공 이론 수업, 공학관 일반강의실 희망합니다. 김민수 minsu@hansung.ac.kr, 컴퓨터공학부.",
+            placeholder="예: 강의자 김민수 교수 (minsu@hansung.ac.kr, 컴퓨터공학부). 자료구조 수업, 공학 전공 이론, 월수 1-2교시 30명, 공학관 일반강의실 희망합니다.",
         )
 
         b1, b2 = st.columns([3, 1])
@@ -348,7 +397,7 @@ def _render_chat_history() -> None:
 def _render_field_widget(key: str, draft: dict):
     """단계별 입력 위젯. 반환값은 폼이 제출됐을 때의 (normalized, display)."""
     widget_key = f"chat_in_{key}"
-    if key in ("name", "email", "course_name"):
+    if key in ("name", "email", "course_name", "affiliation"):
         return st.text_input(_LABEL_BY_KEY.get(key, key), key=widget_key)
     if key == "course_category":
         return st.selectbox("교과구분 1", COURSE_CATEGORIES, key=widget_key)
@@ -373,7 +422,14 @@ def _render_field_widget(key: str, draft: dict):
     if key == "days":
         return st.multiselect("요일", DAYS, default=["월"], key=widget_key)
     if key == "time_slot":
-        return st.selectbox("시간대", TIME_SLOTS, key=widget_key)
+        return st.multiselect(
+            "시간대 (1교시 또는 연속된 2교시까지)",
+            TIME_SLOTS,
+            default=[TIME_SLOTS[0]],
+            max_selections=2,
+            key=widget_key,
+            help="연속이 아닌 교시(예: 1교시+3교시)는 선택할 수 없습니다.",
+        )
     return None
 
 
@@ -384,12 +440,17 @@ def _validate_and_normalize(key: str, val) -> tuple[bool, str, object, str]:
         if not v:
             return False, "값을 입력해주세요.", None, ""
         return True, "", v, v
+    if key == "affiliation":
+        v = (val or "").strip()
+        if not v:
+            return False, "강의자 소속(학과)을 입력해주세요.", None, ""
+        return True, "", v, v
     if key == "email":
         v = (val or "").strip()
         if "@" not in v or "." not in v:
             return False, "올바른 이메일을 입력해주세요.", None, ""
         return True, "", v, v
-    if key in ("course_category", "class_format", "building", "requested_type", "time_slot"):
+    if key in ("course_category", "class_format", "building", "requested_type"):
         return True, "", val, val
     if key == "capacity_needed":
         return True, "", int(val), f"{int(val)}명"
@@ -397,6 +458,16 @@ def _validate_and_normalize(key: str, val) -> tuple[bool, str, object, str]:
         if not val:
             return False, "요일을 한 개 이상 선택해주세요.", None, ""
         return True, "", list(val), ", ".join(val)
+    if key == "time_slot":
+        slots = list(val) if isinstance(val, list) else ([val] if val else [])
+        if not slots:
+            return False, "시간대를 한 개 이상 선택해주세요.", None, ""
+        if len(slots) > 2:
+            return False, "연속된 2교시까지만 선택할 수 있습니다.", None, ""
+        if not are_consecutive_slots(slots):
+            return False, "선택한 교시는 연속이어야 합니다. (예: 1교시+2교시 OK / 1교시+3교시 X)", None, ""
+        normalized = join_time_slots(slots)
+        return True, "", normalized, normalized
     return False, "알 수 없는 단계", None, ""
 
 
@@ -505,7 +576,8 @@ def _render_right_pane(semester: Semester) -> None:
     rows = [
         {
             "ID": a.id,
-            "신청자": a.applicant_name,
+            "강의자": a.applicant_name,
+            "소속(학과)": a.affiliation or "-",
             "강의/행사": a.course_name,
             "교과1": a.course_category or "-",
             "교과2": a.class_format or "-",

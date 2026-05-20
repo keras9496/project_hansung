@@ -35,7 +35,25 @@ def _apply_lightweight_migrations() -> None:
             conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'))
 
 
+def _normalize_classroom_capacity() -> None:
+    """과거 강의실 마스터 시드의 capacity=0(원본 xlsx 결측) 행을 30 으로 보정.
+
+    배정 후보 필터(c.capacity >= 필요 인원) 에서 0 인 강의실은 무조건 빠지므로
+    낙산관·진리관 일부 실기실이 사실상 자동 배정 불가 상태였다.
+    멱등하며, 정상 capacity 행은 손대지 않는다.
+    """
+    inspector = inspect(engine)
+    if "classrooms" not in set(inspector.get_table_names()):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE classrooms SET capacity = 30 "
+            "WHERE capacity IS NULL OR capacity <= 0"
+        ))
+
+
 def init_db() -> None:
     from app import models  # noqa: F401  models 등록을 위해 import
     Base.metadata.create_all(engine)
     _apply_lightweight_migrations()
+    _normalize_classroom_capacity()
