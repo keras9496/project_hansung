@@ -186,7 +186,6 @@ def _sidebar_section(section: str, semester: Semester) -> tuple[str, Semester]:
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("**현재 정책**")
-    st.sidebar.markdown("- 우선순위: 도착순(FCFS)")
     st.sidebar.markdown("- 메일: 어드민 트리거 시뮬레이션")
     st.sidebar.markdown("- 마감/공개일: 어드민에서 설정")
 

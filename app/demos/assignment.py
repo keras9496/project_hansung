@@ -1,10 +1,10 @@
 """배정 실행 데모.
 
 좌측: 학기 신청 현황 + '지금 배정 실행' 버튼 + 직전 실행 로그.
-우측: 배정 결과 테이블 + 조건매칭 불가 목록 (AI 협상안 생성 포함).
+우측: 배정 결과 테이블 + 배정 실패 목록 (AI 협상안 생성 포함).
 
 내부 상태값(Application.status, MailLog.event_kind 등)은 'deadlock' 으로
-유지하지만, 사용자 노출 문구는 모두 '조건매칭 불가' 로 통일한다.
+유지하지만, 사용자 노출 문구는 모두 '배정 실패' 로 통일한다.
 """
 from __future__ import annotations
 
@@ -40,15 +40,14 @@ def _left_pane(semester: Semester) -> None:
     c1.metric("총 신청", total)
     c2.metric("대기", pending)
     c3.metric("배정", assigned)
-    c4.metric("조건매칭 불가", deadlock)
+    c4.metric("배정 실패", deadlock)
 
     st.markdown(
         "**배정 정책**  \n"
-        "- 우선순위: 도착순(FCFS)  \n"
         "- 하드 규칙 1: 이론 수업은 실기/실습실 배정 불가  \n"
         "- 하드 규칙 2: **전공 + (실기 / 이론+실기)** 수업은 반드시 전공 건물에서만 배정 "
         "(공학→공학관 / 무용→낙산관 / 회화→지선관 / 패션+디자인→창의관). "
-        "전공 건물에 가능 후보가 없으면 다른 건물 fallback 없이 **조건매칭 불가**  \n"
+        "전공 건물에 가능 후보가 없으면 다른 건물 fallback 없이 **배정 실패**  \n"
         "- 소프트 규칙(이론·교양): 전공 수업은 전공 건물 우선 → 강의자 희망 건물 → 그 외  \n"
         "- 시간대: 단일 교시 또는 **연속된 2교시** 까지 점유 가능  \n"
         "- best-fit: 적합 강의실 중 수용인원이 가장 작은 강의실 우선"
@@ -103,7 +102,7 @@ def _left_pane(semester: Semester) -> None:
         )
         st.success(
             f"직전 실행: 총 {last['total']}건 중 **{last['assigned']}건 배정**, "
-            f"**{last['deadlock']}건 조건매칭 불가**{match_line}"
+            f"**{last['deadlock']}건 배정 실패**{match_line}"
         )
         tier_label = {"major": "전공건물", "user": "희망건물", "rest": "그 외"}
         with st.expander("실행 상세 로그", expanded=False):
@@ -127,13 +126,13 @@ def _left_pane(semester: Semester) -> None:
                 else:
                     reason = d.get("reason") or ""
                     st.write(
-                        f"- #{d['application_id']} {d['applicant']} → **조건매칭 불가**"
+                        f"- #{d['application_id']} {d['applicant']} → **배정 실패**"
                         + (f" — {reason}" if reason else "")
                     )
 
 
 def _right_pane(semester: Semester) -> None:
-    st.subheader("📋 배정 결과 / 조건매칭 불가")
+    st.subheader("📋 배정 결과 / 배정 실패")
 
     with SessionLocal() as s:
         rows = s.execute(
@@ -220,7 +219,7 @@ def _right_pane(semester: Semester) -> None:
     if deadlocks:
         st.markdown("---")
         st.error(
-            f"⚠️ 조건매칭 불가 {len(deadlocks)}건 — 신청 조건(요일/시간/종류/수용인원)을 "
+            f"⚠️ 배정 실패 {len(deadlocks)}건 — 신청 조건(요일/시간/종류/수용인원)을 "
             "동시에 만족하는 강의실을 찾지 못한 신청입니다. 어드민 메일 발송함에서 조율 메일을 시뮬레이션 전송할 수 있습니다."
         )
         d_rows = [
@@ -243,7 +242,7 @@ def _right_pane(semester: Semester) -> None:
 
         st.markdown(f"#### 🤖 AI 협상안 ({llm_mode_label()})")
         st.caption(
-            "각 조건매칭 불가 건을 펼쳐 'AI 협상안 생성' 을 누르면 Claude 가 가용 슬롯을 분석해 "
+            "각 배정 실패 건을 펼쳐 'AI 협상안 생성' 을 누르면 Claude 가 가용 슬롯을 분석해 "
             "구체적인 대안 2~3개와 협상 메일 초안을 만들어 줍니다."
         )
         for d in deadlocks:

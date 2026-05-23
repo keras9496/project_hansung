@@ -19,7 +19,7 @@ from app.services.semester_service import update_semester_dates
 EVENT_LABELS = {
     "confirmation": "📥 접수 확인",
     "assigned": "✅ 배정 완료",
-    "deadlock": "⚠️ 조건매칭 불가 조율",
+    "deadlock": "⚠️ 배정 실패 조율",
     "temp_confirmed": "📌 임시 예약 확정",
     "temp_expired": "⌛ 임시 예약 만료",
 }

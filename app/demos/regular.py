@@ -309,7 +309,7 @@ def _render_intake_panel(semester: Semester) -> None:
         )
 
         st.text_area(
-            "자연어 신청",
+            "유저 친화적 신청",
             key="reg_intake_text",
             height=140,
             label_visibility="collapsed",
@@ -570,7 +570,7 @@ def _render_right_pane(semester: Semester) -> None:
     c3.metric("배정 완료", sum(1 for a in apps if a.status == "assigned"))
 
     if not apps:
-        st.info("아직 신청이 없습니다. 왼쪽에서 자연어로 신청해 보세요.")
+        st.info("아직 신청이 없습니다. 왼쪽에서 유저 친화적으로 신청해 보세요.")
         return
 
     rows = [
