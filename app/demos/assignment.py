@@ -19,6 +19,7 @@ from app.services.llm import (
     mode_label as llm_mode_label,
     suggest_deadlock_alternatives,
 )
+from app.services.semester_service import create_next_semester
 
 
 def _left_pane(semester: Semester) -> None:
@@ -68,6 +69,27 @@ def _left_pane(semester: Semester) -> None:
     if run_clicked:
         result = run_assignment(semester.id, seed=42 if seeded else None)
         st.session_state["assign_last_result"] = result
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("**🗓 학기 전환**")
+    st.caption(
+        "현재 학기 배정이 끝났다면 다음 학기로 넘어가 새로 시작할 수 있습니다. "
+        "새 학기는 신청 **0건** 으로 시작합니다 (이번 학기의 150건은 그대로 보존)."
+    )
+    if st.button(
+        "📅 다음학기 배정하기 (새 학기 생성)",
+        use_container_width=True,
+        key="assign_create_next",
+    ):
+        new_sem = create_next_semester()
+        # 사이드바 학기 선택을 새 학기로 자동 전환
+        st.session_state["sidebar_semester_label"] = f"{new_sem.year}-{new_sem.term}학기"
+        st.session_state.pop("assign_last_result", None)
+        st.success(
+            f"새 학기 **{new_sem.year}-{new_sem.term}학기** 가 생성되었습니다. "
+            "사이드바에서 자동 선택되며, 신청 0건부터 시작합니다."
+        )
         st.rerun()
 
     last = st.session_state.get("assign_last_result")

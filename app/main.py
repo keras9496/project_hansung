@@ -44,9 +44,38 @@ ADMIN_MODES = {
 }
 
 
+def _ensure_demo_classrooms() -> None:
+    """강의실 마스터가 비어 있으면 .xlsx → DB 시드를 자동 실행한다.
+
+    Why: Render 신규 배포(디스크 초기화)에서도 셸 접속 없이 곧바로 시연 가능한 상태가 되도록.
+    """
+    with SessionLocal() as s:
+        n_room = s.query(Classroom).count()
+    if n_room == 0:
+        from scripts.seed_classrooms import seed as _seed_classrooms
+        _seed_classrooms()
+
+
+def _ensure_demo_applications(semester: Semester) -> None:
+    """데모 시드 학기에 신청이 0건이면 150건을 자동 시드한다.
+
+    Why: 시연 시작 시 항상 ~150건이 존재해야 배정/데드락 데모가 의미를 갖는다.
+    리셋 후에도 자동 복원되도록 매 부트스트랩에서 0건이면 다시 채운다.
+    '다음학기 배정하기' 로 만든 새 학기는 이 시드 대상이 아님(별도 0건 시작).
+    """
+    with SessionLocal() as s:
+        n_apps = s.query(Application).filter(Application.semester_id == semester.id).count()
+    if n_apps == 0:
+        from scripts.seed_applications import seed_applications
+        seed_applications(count=150, reset=False, seed=42)
+
+
 def _bootstrap() -> Semester:
     init_db()
-    return ensure_demo_semester()
+    _ensure_demo_classrooms()
+    semester = ensure_demo_semester()
+    _ensure_demo_applications(semester)
+    return semester
 
 
 def _reset_demo_data(semester_id: int) -> None:
@@ -142,7 +171,17 @@ def _sidebar_section(section: str, semester: Semester) -> tuple[str, Semester]:
 
     semesters = list_semesters()
     labels = {f"{s.year}-{s.term}학기": s for s in semesters}
-    chosen_label = st.sidebar.selectbox("학기", list(labels.keys()))
+    label_keys = list(labels.keys())
+    # 새 학기 생성 직후 해당 학기를 자동 선택하기 위해 세션 상태를 사용한다.
+    # 옵션에 없는 값이 남아 있으면 selectbox 가 예외를 던지므로 먼저 정리한다.
+    preselect = st.session_state.get("sidebar_semester_label")
+    if preselect is not None and preselect not in labels:
+        del st.session_state["sidebar_semester_label"]
+        preselect = None
+    default_idx = label_keys.index(preselect) if preselect in labels else 0
+    chosen_label = st.sidebar.selectbox(
+        "학기", label_keys, index=default_idx, key="sidebar_semester_label"
+    )
     chosen = labels[chosen_label]
 
     st.sidebar.markdown("---")

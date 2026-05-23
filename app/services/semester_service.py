@@ -20,6 +20,30 @@ def ensure_demo_semester() -> Semester:
         return sem
 
 
+def create_next_semester() -> Semester:
+    """현재 가장 최신 학기의 다음 학기를 만들고 반환한다.
+
+    Why: '다음학기 배정하기' 버튼이 누적 시드(150건)에 영향을 주지 않고
+    완전히 새 학기(신청 0건)에서 배정을 시작할 수 있게 하기 위함.
+    1학기 → 2학기, 2학기 → 다음 해 1학기 로 자연스럽게 롤오버한다.
+    """
+    with SessionLocal() as s:
+        latest = s.scalars(
+            select(Semester).order_by(Semester.year.desc(), Semester.term.desc())
+        ).first()
+        if latest is None:
+            new_year, new_term = 2026, 1
+        elif latest.term == 1:
+            new_year, new_term = latest.year, 2
+        else:
+            new_year, new_term = latest.year + 1, 1
+        sem = Semester(year=new_year, term=new_term, status="open")
+        s.add(sem)
+        s.commit()
+        s.refresh(sem)
+        return sem
+
+
 def list_semesters() -> list[Semester]:
     with SessionLocal() as s:
         return list(
