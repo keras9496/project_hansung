@@ -148,10 +148,10 @@ _SYSTEM_CONSISTENCY = """\
 
 _SYSTEM_DEADLOCK = """\
 당신은 한성대 강의실 예약 사무실의 협상 보조원입니다.
-자동 배정에 실패한(시스템 내부 코드 'deadlock', **사용자 노출 용어는 '배정 실패'**)
+자동 배정에 실패한(시스템 내부 코드 'deadlock', **사용자 노출 용어는 '재배정 필요'**)
 신청에 대해, 주어진 가용 후보와 정책을 바탕으로
 구체적이고 실행 가능한 대안 2~3개를 한국어로 제안하세요.
-협상 메일과 description 본문에는 '데드락' 이 아니라 '배정 실패' 표현을 사용합니다.
+협상 메일과 description 본문에는 '데드락' 이 아니라 '재배정 필요' 표현을 사용합니다.
 
 각 alternative.kind 는 다음 중 하나:
   - "time_shift" : 같은 강의실종류에서 다른 요일 또는 다른 교시
@@ -531,7 +531,7 @@ def _mock_deadlock(app: dict, free_pool: list[dict]) -> DeadlockProposal:
     email = (
         f"{app.get('applicant_name', '강의자')} 교수님,\n\n"
         f"신청하신 '{app.get('course_name', '강의')}' 강의실이 요청 시간대에 모두 점유되거나 "
-        f"조건을 만족하는 후보가 없어 자동 배정이 어려운 상태(배정 실패)입니다.\n"
+        f"조건을 만족하는 후보가 없어 자동 배정이 어려운 상태(재배정 필요)입니다.\n"
         "아래 대안 중 가능한 옵션을 회신해주시면 즉시 배정을 진행하겠습니다.\n"
         + ("\n".join(f"- {a.description}" for a in alts) if alts else "- 다른 시간대 또는 다른 건물을 검토 부탁드립니다.\n")
         + "\n\n감사합니다.\n한성대 학사 사무실"
@@ -559,7 +559,7 @@ def suggest_deadlock_alternatives(
         "competing_applications": (occupied_pool or [])[:10],
     }
     user_text = (
-        "배정 실패(자동 배정 실패) 신청 1건과 가용 후보를 제공합니다. "
+        "재배정 필요(자동 재배정 필요) 신청 1건과 가용 후보를 제공합니다. "
         "대안 2~3개와 협상 메일 초안 1개를 한국어로 만들어주세요.\n"
         f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2, default=str)}\n```"
     )

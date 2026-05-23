@@ -163,12 +163,12 @@ def run_assignment(semester_id: int, seed: Optional[int] = None) -> dict:
                     event_kind="deadlock",
                     related_id=app.id,
                     recipients=[app.email, "office@hansung.ac.kr"],
-                    subject=f"[강의실 예약] 배정 실패 안내 (신청 ID #{app.id})",
+                    subject=f"[강의실 예약] 재배정 필요 안내 (신청 ID #{app.id})",
                     body=(
                         f"{app.applicant_name}님 및 담당 사무실 귀하,\n\n"
                         f"신청하신 '{app.requested_type}' 종류의 강의실이 요청 시간대"
                         f"({', '.join(app.days)} {app.time_slot})에 모두 점유되었거나"
-                        f" 조건을 만족하는 후보가 없어 자동 배정이 어려웠습니다(배정 실패).\n"
+                        f" 조건을 만족하는 후보가 없어 자동 배정이 어려웠습니다(재배정 필요).\n"
                         f"- 사유: {reason_text}\n\n"
                         f"가용한 다른 시간대 또는 다른 종류/건물로 재신청 부탁드립니다."
                     ),
